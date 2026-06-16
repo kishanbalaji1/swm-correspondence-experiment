@@ -386,8 +386,8 @@ timeline.push({
     required: true
   }],
   on_finish: function(data) {
-    // the response comes back as a JSON string so we parse it to get the actual ID value
-    const id = JSON.parse(data.response).participant_id;
+    // the response comes back as an object in jsPsych 7, so we access it directly
+    const id = data.response.participant_id;
     // attach the ID to all future data rows for this participant
     jsPsych.data.addProperties({ participant_id: id });
   }
