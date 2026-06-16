@@ -1,0 +1,631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Memory Study</title>
+
+  <!-- loads the jsPsych experiment framework from the internet -->
+  <script src="https://unpkg.com/jspsych@7.3.4"></script>
+  <!-- plugin for screens that show text and wait for a key press -->
+  <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@1.1.3"></script>
+  <!-- plugin that forces the browser into fullscreen mode -->
+  <script src="https://unpkg.com/@jspsych/plugin-fullscreen@1.2.1"></script>
+  <!-- plugin for multi-page instruction slides with Next/Back buttons -->
+  <script src="https://unpkg.com/@jspsych/plugin-instructions@1.1.4"></script>
+  <!-- plugin for screens that draw shapes and wait for a key press (used for all trial phases) -->
+  <script src="https://unpkg.com/@jspsych/plugin-canvas-keyboard-response@1.1.3"></script>
+  <!-- plugin for screens that have a text box (used for participant ID entry) -->
+  <script src="https://unpkg.com/@jspsych/plugin-survey-text@1.1.3"></script>
+  <!-- default visual styling for jsPsych (fonts, spacing, button look) -->
+  <link rel="stylesheet" href="https://unpkg.com/jspsych@7.3.4/css/jspsych.css">
+
+  <style>
+    /* dark background so the colored squares pop against it */
+    body {
+      background-color: #1a1a1a;
+      color: #e0e0e0;
+      font-family: 'Georgia', serif;
+    }
+    /* keeps all content centered in the middle of the screen, not stretched edge to edge */
+    .jspsych-content {
+      max-width: 800px;
+    }
+    /* styling for all clickable buttons in the experiment */
+    .jspsych-btn {
+      background-color: #3a3a3a;
+      color: #e0e0e0;
+      border: 1px solid #666;
+      padding: 10px 24px;
+      font-size: 16px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin: 6px;
+    }
+    /* button gets slightly lighter when you hover over it */
+    .jspsych-btn:hover {
+      background-color: #555;
+    }
+    /* text size and line spacing for instruction pages */
+    p, li {
+      font-size: 17px;
+      line-height: 1.7;
+    }
+  </style>
+</head>
+<body>
+<script>
+
+// ============================================================
+// EXPERIMENT PARAMETERS
+// ============================================================
+// Everything that controls how the experiment runs lives here.
+// If Flombaum wants to change timing, number of squares, colors,
+// displacement sizes, etc. -- change it here and it updates everywhere.
+// Nothing is hardcoded anywhere else in the file.
+// ============================================================
+const PARAMS = {
+
+  // how many squares appear on screen at once -- tested at each of these 6 levels
+  // 1 square is easiest, 6 is hardest -- same as original Bae et al. (2016) paper
+  memoryLoads: [1, 2, 3, 4, 5, 6],
+
+  // how far the probe square shifts left or right from where it originally was, in pixels
+  // 6 levels from very small (hard to see) to bigger (easier to see)
+  // original paper used visual angles on a fixed lab monitor -- pixels used here
+  // because online participants have different screen sizes; adjust after piloting
+  displacements: [4, 8, 12, 16, 20, 24],
+
+  // how many trials to run for each unique combination of (load x displacement x CI type)
+  // original paper used 12 -- increased to 16 here for stronger results with online sample sizes
+  trialsPerCell: 16,
+
+  // all timing values in milliseconds (1000ms = 1 second)
+  fixationDuration: 500,    // how long the center + cross shows before the squares appear
+  encodingDuration: 2000,   // how long the colored squares stay on screen (memorize them)
+  blankDuration: 900,       // how long the blank screen lasts between squares disappearing and probe appearing
+  probeDuration: null,      // null means no time limit -- participant can take as long as needed to respond
+                            // original lab study had a timeout but removed here for online
+
+  // size of each colored square in pixels (width and height are the same)
+  squareSize: 40,
+
+  // the 6 colors used for the squares -- each square on a trial gets a unique color
+  // 6 colors because the max number of squares is 6
+  // to change a color, replace the hex code (e.g. '#E63946' is red)
+  squareColors: ['#E63946', '#457B9D', '#2DC653', '#F4A261', '#9B5DE5', '#00B4D8'],
+
+  // width and height of the drawing area in pixels
+  canvasWidth: 700,
+  canvasHeight: 500,
+
+  // how far from the center the squares are placed -- they sit on an invisible circle
+  // Flombaum's note said to center the display around fixation, so squares go on a ring
+  // instead of in columns like the original paper
+  ringRadius: 160,
+
+  // where to send the participant after they finish so they get their course credit on SONA
+  // SONA is the JHU system that recruits student participants
+  // replace the two XXXX values with the real IDs once the study is created on SONA
+  sonaRedirectURL: "https://jhu.sona-systems.com/webstudy_credit.aspx?experiment_id=XXXX&credit_token=XXXX&survey_code="
+};
+
+
+// ============================================================
+// HELPER FUNCTIONS
+// ============================================================
+// Small reusable functions called throughout the rest of the code.
+// ============================================================
+
+// calculates where to place n squares on a ring around the center of the canvas
+// returns a list of x,y coordinates, starting from the top and going clockwise
+// example: if load=4, returns 4 positions evenly spaced like corners of a square
+function getRingPositions(n, radius, centerX, centerY) {
+  const positions = [];
+  for (let i = 0; i < n; i++) {
+    // divide the circle into n equal slices and find the x,y point at each slice
+    // subtract PI/2 so the first square starts at the top (12 o'clock) not the right (3 o'clock)
+    const angle = (2 * Math.PI * i / n) - (Math.PI / 2);
+    positions.push({
+      x: centerX + radius * Math.cos(angle),
+      y: centerY + radius * Math.sin(angle)
+    });
+  }
+  return positions;
+}
+
+// randomly reorders a list so trials and colors appear in a different order each time
+// uses the Fisher-Yates algorithm which is the standard unbiased way to shuffle
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]]; // swap item i with a random earlier item
+  }
+  return arr;
+}
+
+
+// ============================================================
+// TRIAL GENERATION WITH C/I CLASSIFICATION
+// ============================================================
+// Builds every trial in the experiment before the experiment starts.
+// Also classifies each trial as Consistent (C) or Inconsistent (I) -- this is
+// the key scientific addition over the original paper which did this post-hoc.
+// By classifying here at generation time we can preregister it and it gets
+// counterbalanced automatically across the experiment.
+//
+// What C and I mean:
+//   Consistent -- even if the participant compares the probe to the WRONG square
+//   by accident (a correspondence error), they would still give the right answer
+//
+//   Inconsistent -- if the participant makes a correspondence error and compares
+//   the probe to the wrong square, they would give the WRONG answer
+//   These trials are the ones that reveal correspondence errors in the data
+// ============================================================
+function generateTrials() {
+  const trials = [];
+  const cx = PARAMS.canvasWidth / 2;   // x coordinate of the canvas center
+  const cy = PARAMS.canvasHeight / 2;  // y coordinate of the canvas center
+
+  // loop through every combination of load and displacement to build all trials
+  for (const load of PARAMS.memoryLoads) {
+    for (const displacement of PARAMS.displacements) {
+      for (let rep = 0; rep < PARAMS.trialsPerCell; rep++) {
+
+        // randomly pick 'load' number of colors from the color list, no repeats
+        const colors = shuffle([...PARAMS.squareColors]).slice(0, load);
+
+        // figure out where each square will appear on the ring
+        const positions = getRingPositions(load, PARAMS.ringRadius, cx, cy);
+
+        // randomly pick which square will be the probe (the one that reappears later)
+        const targetIdx = Math.floor(Math.random() * load);
+        const targetPos = positions[targetIdx];
+
+        // randomly decide if the probe moves left or right
+        const direction = Math.random() < 0.5 ? 'left' : 'right';
+
+        // calculate where the probe will actually appear after shifting
+        // positive dx means it moved right, negative means left
+        const dx = direction === 'right' ? displacement : -displacement;
+        const probeX = targetPos.x + dx;
+
+        // C/I classification
+        // if there is only 1 square there are no other squares to confuse it with
+        // so load=1 trials can never have a correspondence error -- always consistent
+        let ciType = 'consistent';
+
+        if (load > 1) {
+          // find the non-target square that is closest to the target square
+          // this is the square most likely to be accidentally used for comparison
+          let minDist = Infinity;
+          let nearestPos = null;
+
+          for (let i = 0; i < load; i++) {
+            if (i === targetIdx) continue; // skip the actual target, only look at other squares
+            const d = Math.hypot(
+              positions[i].x - targetPos.x,
+              positions[i].y - targetPos.y
+            );
+            if (d < minDist) {
+              minDist = d;
+              nearestPos = positions[i]; // this is the closest wrong square
+            }
+          }
+
+          // if the participant accidentally used nearestPos for comparison instead of the target,
+          // which direction would the probe appear to move relative to that wrong square?
+          const errorDx = probeX - nearestPos.x;
+          const errorDirection = errorDx > 0 ? 'right' : 'left';
+
+          // if the error direction matches the true direction, the mistake doesn't matter (consistent)
+          // if they are opposite, the mistake causes a wrong answer (inconsistent)
+          ciType = (errorDirection === direction) ? 'consistent' : 'inconsistent';
+        }
+
+        // save everything about this trial into one object
+        trials.push({
+          load,                    // how many squares shown
+          displacement,            // how far probe moved in pixels
+          rep,                     // which repetition this is within this cell
+          colors,                  // list of colors for each square
+          positions,               // list of x,y positions for each square
+          targetIdx,               // index of which square is the probe
+          targetPos,               // x,y of the probe's original position
+          direction,               // correct answer: 'left' or 'right'
+          probeX,                  // x position where the probe reappears
+          probeY: targetPos.y,     // y position of the probe (same as original, only moves horizontally)
+          ciType                   // 'consistent' or 'inconsistent'
+        });
+      }
+    }
+  }
+
+  // randomize the order so all trials are mixed up
+  return shuffle(trials);
+}
+
+
+// ============================================================
+// DRAWING FUNCTIONS
+// ============================================================
+// These functions draw what appears on screen during each phase of a trial.
+// Each one wipes the canvas clean first then draws only what it needs.
+// The canvas coordinate system starts at (0,0) in the top-left corner.
+// x increases going right, y increases going down.
+// ============================================================
+
+// draws a small + cross at the center of the screen
+// shown at the start of every trial -- participant keeps their eyes here
+function drawFixation(ctx, w, h) {
+  ctx.clearRect(0, 0, w, h);         // wipe everything off the canvas
+  ctx.strokeStyle = '#e0e0e0';       // light gray color for the cross
+  ctx.lineWidth = 2;
+  const cx = w / 2;
+  const cy = h / 2;
+  const size = 10;                   // length of each arm of the cross in pixels
+  ctx.beginPath();
+  ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy); // horizontal arm
+  ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size); // vertical arm
+  ctx.stroke();
+}
+
+// draws the fixation cross AND all the colored squares for this trial
+// this is the encoding phase where the participant memorizes the square locations
+function drawEncoding(ctx, w, h, trial) {
+  ctx.clearRect(0, 0, w, h);
+  drawFixation(ctx, w, h);                   // always show the fixation cross underneath
+  const half = PARAMS.squareSize / 2;        // half the square size, used to center each square on its position
+  for (let i = 0; i < trial.load; i++) {
+    ctx.fillStyle = trial.colors[i];         // set the color for this square
+    ctx.fillRect(
+      trial.positions[i].x - half,          // left edge: center x minus half width
+      trial.positions[i].y - half,          // top edge: center y minus half height
+      PARAMS.squareSize,                     // width
+      PARAMS.squareSize                      // height
+    );
+  }
+}
+
+// draws only the fixation cross and nothing else
+// this is the blank memory delay -- squares have disappeared, probe has not appeared yet
+function drawBlank(ctx, w, h) {
+  ctx.clearRect(0, 0, w, h);
+  drawFixation(ctx, w, h);
+}
+
+// draws the fixation cross AND the probe square at its shifted position
+// this is when the participant responds -- did it move left or right?
+// the probe is drawn in the same color as the original target square
+function drawProbe(ctx, w, h, trial) {
+  ctx.clearRect(0, 0, w, h);
+  drawFixation(ctx, w, h);
+  const half = PARAMS.squareSize / 2;
+  ctx.fillStyle = trial.colors[trial.targetIdx];  // same color as the original target
+  ctx.fillRect(
+    trial.probeX - half,    // shifted x position (left or right of original)
+    trial.probeY - half,    // same y as original (probe only moves horizontally)
+    PARAMS.squareSize,
+    PARAMS.squareSize
+  );
+}
+
+
+// ============================================================
+// INITIALIZE JSPSYCH
+// ============================================================
+// Starts up jsPsych and tells it what to do when the whole
+// experiment finishes -- saves the data and sends participant back to SONA.
+// ============================================================
+const jsPsych = initJsPsych({
+  on_finish: function(data) {
+
+    // automatically download a CSV file of the participant's responses to their computer
+    // only saves the probe response rows (not fixation/blank/encoding screens)
+    // named using the participant's ID so we know whose data it is
+    const csv = jsPsych.data.get().filter({ phase: 'probe' }).csv();
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `swm_data_${jsPsych.data.get().values()[0]?.participant_id || 'unknown'}.csv`;
+    a.click();
+
+    // redirect participant back to SONA so they receive their course credit
+    // SONA passes a unique survey_code in the URL when it sends participants to us
+    // we read that code and send it back to SONA to confirm they completed the study
+    const urlParams = new URLSearchParams(window.location.search);
+    const surveyCode = urlParams.get('survey_code') || '';
+    if (surveyCode) {
+      setTimeout(() => {
+        window.location.href = PARAMS.sonaRedirectURL + surveyCode;
+      }, 2000); // wait 2 seconds so the CSV download can start before the page changes
+    }
+  }
+});
+
+
+// ============================================================
+// TIMELINE
+// ============================================================
+// The timeline is the ordered list of every screen the participant sees.
+// jsPsych goes through it from top to bottom.
+// Built step by step below, then launched at the very end of the file.
+//
+// Screens in order:
+//   1. Fullscreen prompt
+//   2. Participant ID entry
+//   3. Instructions (3 pages)
+//   4. Practice trials (6 easy trials)
+//   5. Practice complete screen
+//   6. Main experiment trials (all loads and displacements, breaks every 60)
+//   7. Debrief screen
+// ============================================================
+const timeline = [];
+
+
+// 1. FULLSCREEN
+// forces the browser into fullscreen before anything else
+// important for online studies to standardize what participants see
+timeline.push({
+  type: jsPsychFullscreen,
+  fullscreen_mode: true,
+  message: '<p>This study requires fullscreen mode.</p>',
+  button_label: 'Enter Fullscreen and Begin'
+});
+
+
+// 2. PARTICIPANT ID
+// participant types in their SONA ID so we can link their data to their account
+// the ID gets automatically attached to every row they produce in the data file
+timeline.push({
+  type: jsPsychSurveyText,
+  questions: [{
+    prompt: 'Please enter your SONA participant ID:',
+    name: 'participant_id',
+    required: true
+  }],
+  on_finish: function(data) {
+    // the response comes back as a JSON string so we parse it to get the actual ID value
+    const id = JSON.parse(data.response).participant_id;
+    // attach the ID to all future data rows for this participant
+    jsPsych.data.addProperties({ participant_id: id });
+  }
+});
+
+
+// 3. INSTRUCTIONS
+// three pages explaining the task before practice starts
+// participant clicks Next and Back to move between pages
+// to change the instruction text, edit the HTML strings inside the pages array below
+timeline.push({
+  type: jsPsychInstructions,
+  pages: [
+    // page 1 -- explains what the task is and which keys to press
+    `<div style="max-width:600px; margin:auto; text-align:left;">
+      <h2 style="text-align:center;">Welcome</h2>
+      <p>In this study, you will see a set of colored squares appear briefly on the screen.</p>
+      <p>Your job is to <strong>remember where each square was located</strong>.</p>
+      <p>After a short delay, <strong>one square will reappear</strong> but slightly shifted from its original position.</p>
+      <p>You will judge whether it moved <strong>LEFT</strong> or <strong>RIGHT</strong>.</p>
+      <p>Press <strong>F</strong> for LEFT &nbsp;&nbsp; Press <strong>J</strong> for RIGHT</p>
+    </div>`,
+
+    // page 2 -- tips for doing the task well
+    `<div style="max-width:600px; margin:auto; text-align:left;">
+      <h2 style="text-align:center;">Tips</h2>
+      <p>Try to keep your eyes on the <strong>center cross</strong> throughout each trial.</p>
+      <p>Respond as <strong>accurately</strong> as possible. Speed is less important.</p>
+      <p>The task gets harder with more squares on screen. This is expected and normal.</p>
+      <p>You will get a short break every 60 trials.</p>
+      <p>The study takes about <strong>25 to 30 minutes</strong>.</p>
+    </div>`,
+
+    // page 3 -- ready to start
+    `<div style="max-width:600px; margin:auto; text-align:center;">
+      <h2>Ready?</h2>
+      <p>Press Next to begin a short practice round.</p>
+    </div>`
+  ],
+  show_clickable_nav: true,
+  button_label_next: 'Next',
+  button_label_previous: 'Back'
+});
+
+
+// 4. PRACTICE TRIALS
+// 6 easy trials using only 1 or 2 squares so the participant can learn the task
+// before the real experiment starts
+// practice data is labeled practice: true and will be excluded from the analysis
+//
+// each trial has 4 phases back to back:
+//   fixation (cross only) -> encoding (squares appear) -> blank (squares gone) -> probe (respond)
+const practiceTrials = generateTrials()
+  .filter(t => t.load <= 2)  // only use trials with 1 or 2 squares for practice
+  .slice(0, 6);              // take just the first 6
+
+for (const trial of practiceTrials) {
+
+  // phase 1 of 4: fixation cross -- signals that a trial is starting, participant looks at center
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawFixation(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight); },
+    choices: 'NO_KEYS',                      // no key press accepted during this phase
+    trial_duration: PARAMS.fixationDuration, // stays on screen for fixationDuration ms then auto-advances
+    data: { phase: 'fixation', practice: true }
+  });
+
+  // phase 2 of 4: encoding -- colored squares appear, participant memorizes their positions
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawEncoding(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight, trial); },
+    choices: 'NO_KEYS',                       // no response during encoding
+    trial_duration: PARAMS.encodingDuration,
+    data: { phase: 'encoding', practice: true }
+  });
+
+  // phase 3 of 4: blank delay -- squares disappear, only fixation cross remains
+  // this is the memory test -- participant has to hold the locations in mind
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawBlank(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight); },
+    choices: 'NO_KEYS',
+    trial_duration: PARAMS.blankDuration,
+    data: { phase: 'blank', practice: true }
+  });
+
+  // phase 4 of 4: probe -- one square reappears shifted, participant presses F (left) or J (right)
+  // this is the response screen -- the row that gets saved to the data file
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawProbe(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight, trial); },
+    choices: ['f', 'j'],                     // only F and J are accepted
+    trial_duration: PARAMS.probeDuration,    // null = stays until participant responds
+    data: {
+      phase: 'probe',
+      practice: true,
+      load: trial.load,                      // how many squares were shown
+      displacement: trial.displacement,       // how far the probe shifted
+      correct_direction: trial.direction,     // what the right answer is
+      ci_type: trial.ciType,                 // consistent or inconsistent
+      target_idx: trial.targetIdx            // which square was used as the probe
+    },
+    on_finish: function(data) {
+      // convert the raw key pressed (f or j) into a readable direction label
+      const response = data.response === 'f' ? 'left' : 'right';
+      data.response_direction = response;
+      // mark whether the participant got it right
+      data.correct = response === data.correct_direction;
+    }
+  });
+}
+
+
+// 5. PRACTICE COMPLETE SCREEN
+// shown right after the 6 practice trials before the real experiment begins
+// reminds participant of the key mapping one more time
+timeline.push({
+  type: jsPsychHtmlKeyboardResponse,
+  stimulus: `<div style="text-align:center;">
+    <h2>Practice Complete</h2>
+    <p>The real experiment is about to begin.</p>
+    <p>Remember: <strong>F = LEFT &nbsp;&nbsp; J = RIGHT</strong></p>
+    <p>Press any key to start.</p>
+  </div>`,
+  choices: 'ALL_KEYS'  // any key press moves on
+});
+
+
+// 6. MAIN EXPERIMENT TRIALS
+// same 4-phase structure as practice (fixation, encoding, blank, probe)
+// but now with all 6 memory loads and all 6 displacement sizes
+// a rest screen appears automatically every 60 trials
+//
+// to change how often breaks appear, change the 60 in the line "if (trialCount % 60 === 0)"
+const mainTrials = generateTrials();
+let trialCount = 0;
+
+for (const trial of mainTrials) {
+  trialCount++;
+
+  // insert a break screen every 60 trials so participant can rest
+  // skips the break after the very last trial since the debrief screen comes next
+  if (trialCount % 60 === 0 && trialCount < mainTrials.length) {
+    timeline.push({
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div style="text-align:center;">
+        <h2>Take a Break</h2>
+        <p>You have completed ${trialCount} of ${mainTrials.length} trials.</p>
+        <p>Rest as long as you need, then press any key to continue.</p>
+      </div>`,
+      choices: 'ALL_KEYS'
+    });
+  }
+
+  // phase 1 of 4: fixation cross
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawFixation(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight); },
+    choices: 'NO_KEYS',
+    trial_duration: PARAMS.fixationDuration,
+    data: { phase: 'fixation', practice: false }
+  });
+
+  // phase 2 of 4: colored squares appear (encoding)
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawEncoding(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight, trial); },
+    choices: 'NO_KEYS',
+    trial_duration: PARAMS.encodingDuration,
+    data: { phase: 'encoding', practice: false }
+  });
+
+  // phase 3 of 4: blank memory delay
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawBlank(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight); },
+    choices: 'NO_KEYS',
+    trial_duration: PARAMS.blankDuration,
+    data: { phase: 'blank', practice: false }
+  });
+
+  // phase 4 of 4: probe response -- this is the row saved to the data file
+  // to add or remove columns in the output CSV, edit the data object below
+  timeline.push({
+    type: jsPsychCanvasKeyboardResponse,
+    canvas_size: [PARAMS.canvasHeight, PARAMS.canvasWidth],
+    stimulus: (c) => { drawProbe(c.getContext('2d'), PARAMS.canvasWidth, PARAMS.canvasHeight, trial); },
+    choices: ['f', 'j'],
+    trial_duration: PARAMS.probeDuration,
+    data: {
+      phase: 'probe',
+      practice: false,
+      load: trial.load,                   // how many squares were shown (1-6)
+      displacement: trial.displacement,    // how far the probe moved in pixels
+      correct_direction: trial.direction,  // the correct answer: 'left' or 'right'
+      ci_type: trial.ciType,              // 'consistent' or 'inconsistent'
+      target_idx: trial.targetIdx,         // which square index was the probe
+      probe_x: trial.probeX,              // x position of probe after displacement
+      target_x: trial.targetPos.x,        // x position of probe before displacement (original)
+      target_y: trial.targetPos.y         // y position (does not change, probe only moves horizontally)
+    },
+    on_finish: function(data) {
+      // convert f/j keypress into a direction label and record whether it was correct
+      const response = data.response === 'f' ? 'left' : 'right';
+      data.response_direction = response;
+      data.correct = response === data.correct_direction;
+    }
+  });
+}
+
+
+// 7. DEBRIEF
+// last screen shown after all trials are done
+// briefly explains what the study was about
+// the on_finish function at the top handles saving the CSV and redirecting to SONA
+timeline.push({
+  type: jsPsychHtmlKeyboardResponse,
+  stimulus: `<div style="max-width:600px; margin:auto; text-align:center;">
+    <h2>Study Complete. Thank You!</h2>
+    <p>This study investigates how people remember and compare the locations of objects in space.</p>
+    <p>Your data is being saved. If you are receiving course credit, you will be redirected to SONA automatically.</p>
+    <p>If you have any questions, please contact the Flombaum Lab at Johns Hopkins University.</p>
+  </div>`,
+  choices: 'ALL_KEYS',
+  trial_duration: 5000  // auto-advances after 5 seconds even if participant does not press a key
+});
+
+
+// launches the experiment and runs through the timeline from top to bottom
+jsPsych.run(timeline);
+
+</script>
+</body>
+</html>
